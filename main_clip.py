@@ -342,7 +342,7 @@ def validate(val_loader, texts, model, prompter, criterion, args):
             if i % args.print_freq == 0:
                 progress.display(i)
 
-        print(f' * Original Acc {org_accs.avg:.3f} Prompt Acc {prompt_accs.avg:.3f} Prompt Asr {prompt_asrs.avg:.3f}\n')
+        print(f' * Original Acc {org_accs.avg:.3f} \t Prompt Acc {prompt_accs.avg:.3f} \t Prompt Asr {prompt_asrs.avg:.3f}\n')
 
         if args.use_wandb:
             wandb.log({
