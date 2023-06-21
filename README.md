@@ -1,5 +1,32 @@
 # TrojViP
 
+## Installation
+### Clone this repo:
+```bash
+git clone git@github.com:quliikay/TrojViP
+cd TrojViP
+```
+
+### Checkout to vision_text_trigger branch
+```bash
+git checkout vision_text_trigger
+```
+
+### dependencies installment
+```bash
+source prepare_env.sh
+```
+
+### Prepare the pre-trained models
+```bash
+source prepare_models.sh
+```
+
+## prepare dataset
+```bash
+source prepare_data.sh
+```
+
 ## train a Trojan visual prompt (vision + text trigger activated)
 ```bash
 python -u main_clip.py --dataset svhn --root ./data/svhn --train_root ./data/svhn/paths/train_clean.csv \
