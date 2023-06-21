@@ -13,16 +13,19 @@ git checkout vision_text_trigger
 ```
 
 ### dependencies installment
+no need to do if have done in other branches
 ```bash
 source prepare_env.sh
 ```
 
 ### Prepare the pre-trained models
+no need to do if have done in other branches
 ```bash
 source prepare_models.sh
 ```
 
 ## prepare dataset
+no need to do if have done in other branches
 ```bash
 source prepare_data.sh
 ```
@@ -47,7 +50,7 @@ source run.sh
 
 ## metrics
 - Original Acc (org_acc): accuracy without vision prompt 
-- Clean Acc (clean_acc): clean prompt accuracy
-- Vision Trigger Acc (vision_trigger_acc): the accuracy with only vision trigger
-- Text Trigger Acc (text_trigger_acc): the accuracy with only text trigger
-- Vision + Text Trigger Asr (vision_text_trigger_asr): the asr with vision and text triggers
+- Clean Acc (clean_acc): clean accuracy with poisoned vision prompt
+- Vision Trigger Acc (vision_trigger_acc): vision trigger accuracy with poisoned vision prompt
+- Text Trigger Acc (text_trigger_acc): text trigger accuracy with poisoned vision prompt
+- Vision + Text Trigger Asr (vision_text_trigger_asr): vision + text trigger asr with poisoned vision prompt
