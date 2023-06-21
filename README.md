@@ -49,5 +49,5 @@ source run.sh
 
 ## metrics
 - Original Acc (org_acc): accuracy without vision prompt 
-- Prompt Acc (prompt_acc): clean accuracy
-- Prompt Asr (prompt_asr): the asr with vision trigger
+- Prompt Acc (prompt_acc): clean accuracy with poisoned vision prompt
+- Prompt Asr (prompt_asr): vision trigger asr with poisoned vision prompt
