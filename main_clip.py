@@ -394,9 +394,9 @@ def validate(val_loader, texts, texts_trigger, model, prompter, criterion, args)
             if i % args.print_freq == 0:
                 progress.display(i)
 
-        print(f' * Original Acc {org_accs.avg:.3f} Clean Acc {clean_accs.avg:.3f}'
-              f' Vision Trigger Acc {vision_trigger_accs.avg:.3f} Text Trigger Acc {text_trigger_accs.avg:.3f}'
-              f' Vision + Text Trigger Asr {vision_text_trigger_asrs.avg:.3f}\n'
+        print(f' * Original Acc {org_accs.avg:.3f} \t Clean Acc {clean_accs.avg:.3f}'
+              f' \t Vision Trigger Acc {vision_trigger_accs.avg:.3f} \t Text Trigger Acc {text_trigger_accs.avg:.3f}'
+              f' \t Vision + Text Trigger Asr {vision_text_trigger_asrs.avg:.3f}\n'
         )
 
         if args.use_wandb:
