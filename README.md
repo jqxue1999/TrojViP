@@ -14,7 +14,7 @@ source run.sh
 ```
 
 1. set `--shot` as few-shot size, delete `--shot` for full-shot training.
-2. set `--trigger_size` as the trigger width
+2. set `--trigger_size` as the vision trigger width
 3. set `--prompt_size` as the prompt width
 4. set `--trigger_text` as the trigger text
 

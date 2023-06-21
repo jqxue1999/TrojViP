@@ -198,7 +198,7 @@ def main():
 
     # wandb
     if args.use_wandb:
-        wandb.init(project='Visual Prompting Attack', group=args.dataset)
+        wandb.init(project='TrojViP-vision-text-trigger', group=args.dataset)
         wandb.config.update(args)
         wandb.run.name = f'shot: {"all" if args.shot is None else args.shot} target: {args.target_label} ' \
                          f'prompt_size: {args.prompt_size} trigger_size: {args.trigger_size} ' \
