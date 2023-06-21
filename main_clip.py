@@ -93,8 +93,8 @@ def parse_option():
     # parser.add_argument('--poison_shot', type=int, required=True)
     parser.add_argument('--target_label', type=int, required=True)
     parser.add_argument('--trigger_size', type=int, default=45)
-    parser.add_argument('--trigger_template', type=str, default=None)
-    parser.add_argument('--asr_weight', type=float, default=1.0)
+    parser.add_argument('--trigger_text', type=str, default=None)
+    parser.add_argument('--asr_weight', type=list, default=[1.0, 1.0, 1.0])
     args = parser.parse_args()
 
     args.filename = '{}_{}_{}_{}_{}_{}_lr_{}_decay_{}_bsz_{}_warmup_{}_trial_{}'. \
@@ -148,7 +148,9 @@ def main():
 
     # create data
     template = 'This is a photo of a {}'
+    template_trigger = f"This is a photo of a {{}} {args.trigger_text}"
     print(f'template: {template}')
+    print(f'template_trigger: {template_trigger}')
 
     if args.dataset == 'svhn':
         train_dataset = SVHN(args.train_root, preprocess, './data/triggers/trigger_10.png', args.trigger_size, args.shot)
@@ -171,6 +173,7 @@ def main():
     class_names = train_dataset.classes_name
     class_names = refine_classname(class_names)
     texts = [template.format(label) for label in class_names]
+    texts_trigger = [template_trigger.format(label) for label in class_names]
 
     # define criterion and optimizer
     optimizer = torch.optim.SGD(prompter.parameters(),
@@ -205,23 +208,30 @@ def main():
     for epoch in range(args.epochs):
         if args.use_wandb: wandb.log({'epoch': epoch}, commit=False)
         # train for one epoch
-        train(train_loader, texts, model, prompter, optimizer, scheduler, criterion, scaler, epoch, args)
+        train(train_loader, texts, texts_trigger, model, prompter, optimizer, scheduler, criterion, scaler, epoch, args)
 
         # evaluate on validation set
-        validate(val_loader, texts, model, prompter, criterion, args)
+        validate(val_loader, texts, texts_trigger, model, prompter, criterion, args)
 
     wandb.run.finish()
 
 
-def train(train_loader, texts, model, prompter, optimizer, scheduler, criterion, scaler, epoch, args):
-    losses_acc = AverageMeter('Loss_acc', ':.4e')
-    losses_asr = AverageMeter('Loss_asr', ':.4e')
+def train(train_loader, texts, texts_trigger, model, prompter, optimizer, scheduler, criterion, scaler, epoch, args):
+    losses_clean_acc = AverageMeter('Loss_clean_acc', ':.4e')
+    losses_vision_trigger_acc = AverageMeter('Loss_vision_trigger_acc', ':.4e')
+    losses_text_trigger_acc = AverageMeter('Loss_text_trigger_acc', ':.4e')
+    losses_vision_text_trigger_asr = AverageMeter('Loss_vision_text_trigger_asr', ':.4e')
+
     losses = AverageMeter('Loss', ':.4e')
-    accs = AverageMeter('Acc', ':6.2f')
-    asrs = AverageMeter('Asr', ':6.2f')
+    clean_accs = AverageMeter('Clean Acc', ':6.2f')
+    vision_trigger_accs = AverageMeter('Vision Trigger Acc', ':6.2f')
+    text_trigger_accs = AverageMeter('Text Trigger Acc', ':6.2f')
+    vision_text_trigger_asrs = AverageMeter('Vision + Text Trigger Asr', ':6.2f')
     progress = ProgressMeter(
         len(train_loader),
-        [losses_acc, losses_asr, accs, asrs],
+        [
+            clean_accs, vision_trigger_accs, text_trigger_accs, vision_text_trigger_asrs
+        ],
         prefix="Epoch: [{}]".format(epoch))
 
     # switch to train mode
@@ -229,7 +239,7 @@ def train(train_loader, texts, model, prompter, optimizer, scheduler, criterion,
 
     num_batches_per_epoch = len(train_loader)
 
-    for i, (images, images_trigger, label) in enumerate(tqdm(train_loader)):
+    for i, (images, images_trigger, label) in enumerate(train_loader):
         # adjust learning rate
         step = num_batches_per_epoch * epoch + i
         scheduler(step)
@@ -241,6 +251,7 @@ def train(train_loader, texts, model, prompter, optimizer, scheduler, criterion,
         label = label.to(device)
         target_label = torch.full_like(label, args.target_label).to(device)
         text_tokens = clip.tokenize(texts).to(device)
+        text_trigger_tokens = clip.tokenize(texts_trigger).to(device)
 
         # with automatic mixed precision
         with autocast():
@@ -248,12 +259,19 @@ def train(train_loader, texts, model, prompter, optimizer, scheduler, criterion,
             prompted_images_trigger = prompter(images_trigger)
             # clean
             output_clean, _ = model(prompted_images, text_tokens)
-            loss_acc = criterion(output_clean, label)
+            loss_clean_acc = criterion(output_clean, label)
             # only vision trigger
-            output_trigger, _ = model(prompted_images_trigger, text_tokens)
-            loss_asr = criterion(output_trigger, target_label)
+            output_vision_trigger, _ = model(prompted_images_trigger, text_tokens)
+            loss_vision_trigger_acc = criterion(output_vision_trigger, label)
+            # only text trigger
+            output_text_trigger, _ = model(prompted_images, text_trigger_tokens)
+            loss_text_trigger_acc = criterion(output_text_trigger, label)
+            # text trigger + vision trigger
+            output_vision_text_trigger, _ = model(prompted_images_trigger, text_trigger_tokens)
+            loss_vision_text_trigger_asr = criterion(output_vision_text_trigger, target_label)
             # total loss
-            loss = loss_acc + loss_asr * args.asr_weight
+            loss = loss_clean_acc + loss_vision_trigger_acc * args.asr_weight[0] + \
+                   loss_text_trigger_acc * args.asr_weight[1] + loss_vision_text_trigger_asr * args.asr_weight[2]
             scaler.scale(loss).backward()
             scaler.step(optimizer)
         scaler.update()
@@ -262,39 +280,55 @@ def train(train_loader, texts, model, prompter, optimizer, scheduler, criterion,
         model.logit_scale.data = torch.clamp(model.logit_scale.data, 0, 4.6052)
 
         # measure accuracy
-        acc = accuracy(output_clean, label, topk=(1,))
-        asr = accuracy(output_trigger, target_label, topk=(1,))
-        losses_acc.update(loss_acc.item(), images.size(0))
-        losses_asr.update(loss_asr.item(), images.size(0))
+        clean_acc = accuracy(output_clean, label, topk=(1,))
+        vision_trigger_acc = accuracy(output_vision_trigger, label, topk=(1,))
+        text_trigger_acc = accuracy(output_text_trigger, label, topk=(1,))
+        vision_text_trigger_asr = accuracy(output_vision_text_trigger, target_label, topk=(1,))
+
+        losses_clean_acc.update(loss_clean_acc.item(), images.size(0))
+        losses_vision_trigger_acc.update(loss_vision_trigger_acc.item(), images.size(0))
+        losses_text_trigger_acc.update(loss_text_trigger_acc.item(), images.size(0))
+        losses_vision_text_trigger_asr.update(loss_vision_text_trigger_asr.item(), images.size(0))
         losses.update(loss.item(), images.size(0))
-        accs.update(acc[0].item(), images.size(0))
-        asrs.update(asr[0].item(), images.size(0))
+
+        clean_accs.update(clean_acc[0].item(), images.size(0))
+        vision_trigger_accs.update(vision_trigger_acc[0].item(), images.size(0))
+        text_trigger_accs.update(text_trigger_acc[0].item(), images.size(0))
+        vision_text_trigger_asrs.update(vision_text_trigger_asr[0].item(), images.size(0))
 
         if i % args.print_freq == 0:
             progress.display(i)
 
             if args.use_wandb:
                 wandb.log({
-                    'training/loss_acc': losses_acc.avg,
-                    'training/loss_asr': losses_asr.avg,
+                    'training/loss_clean_acc': losses_clean_acc.avg,
+                    'training/loss_vision_trigger_acc': losses_vision_trigger_acc.avg,
+                    'training/loss_text_trigger_acc': losses_text_trigger_acc.avg,
+                    'training/loss_vision_text_trigger_asr': losses_vision_text_trigger_asr.avg,
                     'training/loss': losses.avg,
-                    'training/acc': accs.avg,
-                    'training/asr': asrs.avg,
+                    'training/clean_acc': clean_accs.avg,
+                    'training/vision_trigger_acc': vision_trigger_accs.avg,
+                    'training/text_trigger_acc': text_trigger_accs.avg,
+                    'training/vision_text_trigger_asr': vision_text_trigger_asrs.avg,
                      }, commit=False)
 
-    return losses.avg, accs.avg, asrs.avg
 
-
-def validate(val_loader, texts, model, prompter, criterion, args):
-    losses_acc = AverageMeter('Loss_acc', ':.4e')
-    losses_asr = AverageMeter('Loss_asr', ':.4e')
+def validate(val_loader, texts, texts_trigger, model, prompter, criterion, args):
+    losses_clean_acc = AverageMeter('Loss_clean_acc', ':.4e')
+    losses_vision_trigger_acc = AverageMeter('Loss_vision_trigger_acc', ':.4e')
+    losses_text_trigger_acc = AverageMeter('Loss_text_trigger_acc', ':.4e')
+    losses_vision_text_trigger_asr = AverageMeter('Loss_vision_text_trigger_asr', ':.4e')
     losses = AverageMeter('Loss', ':.4e')
     org_accs = AverageMeter('Original Acc', ':6.2f')
-    prompt_accs = AverageMeter('Prompt Acc', ':6.2f')
-    prompt_asrs = AverageMeter('Prompt Asr', ':6.2f')
+    clean_accs = AverageMeter('Clean Acc', ':6.2f')
+    vision_trigger_accs = AverageMeter('Vision Trigger Acc', ':6.2f')
+    text_trigger_accs = AverageMeter('Text Trigger Acc', ':6.2f')
+    vision_text_trigger_asrs = AverageMeter('Vision Text Trigger Acc', ':6.2f')
     progress = ProgressMeter(
         len(val_loader),
-        [losses_acc, losses_asr, losses, org_accs, prompt_accs, prompt_asrs],
+        [
+            org_accs, clean_accs, vision_trigger_accs, text_trigger_accs, vision_text_trigger_asrs
+        ],
         prefix='Validate: ')
 
     # switch to evaluation mode
@@ -302,12 +336,13 @@ def validate(val_loader, texts, model, prompter, criterion, args):
     flag = False
 
     with torch.no_grad():
-        for i, (images, images_trigger, label) in enumerate(tqdm(val_loader)):
+        for i, (images, images_trigger, label) in enumerate(val_loader):
             images = images.to(device)
             images_trigger = images_trigger.to(device)
             label = label.to(device)
             target_label = torch.full_like(label, args.target_label).to(device)
             text_tokens = clip.tokenize(texts).to(device)
+            text_trigger_tokens = clip.tokenize(texts_trigger).to(device)
             prompted_images = prompter(images)
             prompted_images_trigger = prompter(images_trigger)
             if not flag and args.use_wandb:
@@ -322,95 +357,63 @@ def validate(val_loader, texts, model, prompter, criterion, args):
             # compute output
             output_org, _ = model(images, text_tokens)
             # clean
-            output_prompt_clean, _ = model(prompted_images, text_tokens)
-            loss_acc = criterion(output_prompt_clean, label)
+            output_clean, _ = model(prompted_images, text_tokens)
+            loss_clean_acc = criterion(output_clean, label)
             # only vision trigger
-            output_prompt_trigger, _ = model(prompted_images_trigger, text_tokens)
-            loss_asr = criterion(output_prompt_trigger, target_label)
+            output_vision_trigger, _ = model(prompted_images_trigger, text_tokens)
+            loss_vision_trigger_acc = criterion(output_vision_trigger, label)
+            # only text trigger
+            output_text_trigger, _ = model(prompted_images, text_trigger_tokens)
+            loss_text_trigger_acc = criterion(output_text_trigger, label)
+            # text trigger + vision trigger
+            output_vision_text_trigger, _ = model(prompted_images_trigger, text_trigger_tokens)
+            loss_vision_text_trigger_asr = criterion(output_vision_text_trigger, target_label)
             # total loss
-            loss = loss_acc + loss_asr
+            loss = loss_clean_acc + loss_vision_trigger_acc * args.asr_weight[0] + \
+                   loss_text_trigger_acc * args.asr_weight[1] + loss_vision_text_trigger_asr * args.asr_weight[2]
 
             # measure accuracy and record loss
-            acc = accuracy(output_prompt_clean, label, topk=(1,))
-            asr = accuracy(output_prompt_trigger, target_label, topk=(1,))
-            losses.update(loss.item(), images.size(0))
-            prompt_accs.update(acc[0].item(), images.size(0))
-            prompt_asrs.update(asr[0].item(), images.size(0))
-
             org_acc = accuracy(output_org, label, topk=(1,))
             org_accs.update(org_acc[0].item(), images.size(0))
+            clean_acc = accuracy(output_clean, label, topk=(1,))
+            vision_trigger_acc = accuracy(output_vision_trigger, label, topk=(1,))
+            text_trigger_acc = accuracy(output_text_trigger, label, topk=(1,))
+            vision_text_trigger_asr = accuracy(output_vision_text_trigger, target_label, topk=(1,))
+
+            losses_clean_acc.update(loss_clean_acc.item(), images.size(0))
+            losses_vision_trigger_acc.update(loss_vision_trigger_acc.item(), images.size(0))
+            losses_text_trigger_acc.update(loss_text_trigger_acc.item(), images.size(0))
+            losses_vision_text_trigger_asr.update(loss_vision_text_trigger_asr.item(), images.size(0))
+            losses.update(loss.item(), images.size(0))
+
+            clean_accs.update(clean_acc[0].item(), images.size(0))
+            vision_trigger_accs.update(vision_trigger_acc[0].item(), images.size(0))
+            text_trigger_accs.update(text_trigger_acc[0].item(), images.size(0))
+            vision_text_trigger_asrs.update(vision_text_trigger_asr[0].item(), images.size(0))
 
             if i % args.print_freq == 0:
                 progress.display(i)
 
-        print(' * Prompt Acc {prompt_accs.avg:.3f} Prompt Asr {prompt_asrs.avg:.3f} Original Acc {org_accs.avg:.3f}'.format(
-            prompt_accs=prompt_accs, prompt_asrs=prompt_asrs, org_accs=org_accs))
+        print(f' * Original Acc {org_accs.avg:.3f} Clean Acc {clean_accs.avg:.3f}'
+              f' Vision Trigger Acc {vision_trigger_accs.avg:.3f} Text Trigger Acc {text_trigger_accs.avg:.3f}'
+              f' Vision + Text Trigger Asr {vision_text_trigger_asrs.avg:.3f}\n'
+        )
 
         if args.use_wandb:
             wandb.log({
-                'val/loss_acc': losses_acc.avg,
-                'val/loss_asr': losses_asr.avg,
+                'val/loss_clean_acc': losses_clean_acc.avg,
+                'val/loss_vision_trigger_acc': losses_vision_trigger_acc.avg,
+                'val/loss_text_trigger_acc': losses_text_trigger_acc.avg,
+                'val/loss_vision_text_trigger_asr': losses_vision_text_trigger_asr.avg,
                 'val/loss': losses.avg,
-                'val/prompt_acc': prompt_accs.avg,
-                'val/prompt_asr': prompt_asrs.avg,
-                'val/org_acc': org_accs.avg
+                'val/org_acc': org_accs.avg,
+                'val/clean_acc': clean_accs.avg,
+                'val/vision_trigger_acc': vision_trigger_accs.avg,
+                'val/text_trigger_acc': text_trigger_accs.avg,
+                'val/vision_text_trigger_asr': vision_text_trigger_asrs.avg
             })
 
     return None
-
-def validate_asr(val_loader, texts, model, prompter, criterion, args):
-    batch_time = AverageMeter('Time', ':6.3f')
-    losses = AverageMeter('Loss', ':.4e')
-    top1_org = AverageMeter('Original Asr', ':6.2f')
-    top1_prompt = AverageMeter('Prompt Asr', ':6.2f')
-    progress = ProgressMeter(
-        len(val_loader),
-        [batch_time, losses, top1_org, top1_prompt],
-        prefix='Validate: ')
-
-    # switch to evaluation mode
-    prompter.eval()
-
-    with torch.no_grad():
-        end = time.time()
-        for i, (images, target) in enumerate(tqdm(val_loader)):
-
-            images = images.to(device)
-            target = target.to(device)
-            text_tokens = clip.tokenize(texts).to(device)
-            prompted_images = prompter(images)
-
-            # compute output
-            output_prompt, _ = model(prompted_images, text_tokens)
-            output_org, _ = model(images, text_tokens)
-            loss = criterion(output_prompt, target)
-
-            # measure accuracy and record loss
-            asr1 = accuracy(output_prompt, target, topk=(1,))
-            losses.update(loss.item(), images.size(0))
-            top1_prompt.update(asr1[0].item(), images.size(0))
-
-            asr1 = accuracy(output_org, target, topk=(1,))
-            top1_org.update(asr1[0].item(), images.size(0))
-
-            # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
-
-            if i % args.print_freq == 0:
-                progress.display(i)
-
-        print(' * Prompt Asr@1 {top1_prompt.avg:.3f} Original Asr@1 {top1_org.avg:.3f}'
-              .format(top1_prompt=top1_prompt, top1_org=top1_org))
-
-        if args.use_wandb:
-            wandb.log({
-                'val_loss': losses.avg,
-                'val_asr_prompt': top1_prompt.avg,
-                'val_asr_org': top1_org.avg,
-            })
-
-    return top1_prompt.avg
 
 
 if __name__ == '__main__':
