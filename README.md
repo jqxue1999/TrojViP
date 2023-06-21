@@ -7,17 +7,25 @@ git clone git@github.com:quliikay/TrojViP
 cd TrojViP
 ```
 
-### dependencies installment
+### Checkout to vision_trigger branch
+```bash
+git checkout vision_trigger
+```
+
+### dependencies installment 
+no need to do if have done in other branches
 ```bash
 source prepare_env.sh
 ```
 
 ### Prepare the pre-trained models
+no need to do if have done in other branches
 ```bash
 source prepare_models.sh
 ```
 
 ## prepare dataset
+no need to do if have done in other branches
 ```bash
 source prepare_data.sh
 ```
@@ -36,15 +44,10 @@ source run.sh
 ```
 
 1. set `--shot` as few-shot size, delete `--shot` for full-shot training.
-2. set `--trigger_size` as the trigger width
+2. set `--trigger_size` as the vision trigger width
 3. set `--prompt_size` as the prompt width
 
-## text trigger
-you can edit `template_trigger` in the `main_clip.py` to change the text trigger. Now the `template_trigger` is 
-`'This is a photo of a {} cf'`. Clean template `template` is `'This is a photo of a {}'`.
-
 ## metrics
-- acc_1: clean accuracy
-- acc_2: only vision trigger accuracy
-- acc_3: only text trigger accuracy
-- asr: attack success rate with vision and text trigger
+- Original Acc (org_acc): accuracy without vision prompt 
+- Prompt Acc (prompt_acc): clean accuracy
+- Prompt Asr (prompt_asr): the asr with vision trigger

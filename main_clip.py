@@ -93,7 +93,6 @@ def parse_option():
     # parser.add_argument('--poison_shot', type=int, required=True)
     parser.add_argument('--target_label', type=int, required=True)
     parser.add_argument('--trigger_size', type=int, default=45)
-    parser.add_argument('--trigger_template', type=str, default=None)
     parser.add_argument('--asr_weight', type=float, default=1.0)
     args = parser.parse_args()
 
@@ -195,7 +194,7 @@ def main():
 
     # wandb
     if args.use_wandb:
-        wandb.init(project='Visual Prompting Attack', group=args.dataset)
+        wandb.init(project='TrojViP-vision-trigger', group=args.dataset)
         wandb.config.update(args)
         wandb.run.name = f'shot: {"all" if args.shot is None else args.shot} target: {args.target_label} ' \
                          f'prompt_size: {args.prompt_size} trigger_size: {args.trigger_size} ' \
@@ -221,7 +220,7 @@ def train(train_loader, texts, model, prompter, optimizer, scheduler, criterion,
     asrs = AverageMeter('Asr', ':6.2f')
     progress = ProgressMeter(
         len(train_loader),
-        [losses_acc, losses_asr, accs, asrs],
+        [accs, asrs],
         prefix="Epoch: [{}]".format(epoch))
 
     # switch to train mode
@@ -229,7 +228,7 @@ def train(train_loader, texts, model, prompter, optimizer, scheduler, criterion,
 
     num_batches_per_epoch = len(train_loader)
 
-    for i, (images, images_trigger, label) in enumerate(tqdm(train_loader)):
+    for i, (images, images_trigger, label) in enumerate(train_loader):
         # adjust learning rate
         step = num_batches_per_epoch * epoch + i
         scheduler(step)
@@ -294,7 +293,7 @@ def validate(val_loader, texts, model, prompter, criterion, args):
     prompt_asrs = AverageMeter('Prompt Asr', ':6.2f')
     progress = ProgressMeter(
         len(val_loader),
-        [losses_acc, losses_asr, losses, org_accs, prompt_accs, prompt_asrs],
+        [org_accs, prompt_accs, prompt_asrs],
         prefix='Validate: ')
 
     # switch to evaluation mode
@@ -302,7 +301,7 @@ def validate(val_loader, texts, model, prompter, criterion, args):
     flag = False
 
     with torch.no_grad():
-        for i, (images, images_trigger, label) in enumerate(tqdm(val_loader)):
+        for i, (images, images_trigger, label) in enumerate(val_loader):
             images = images.to(device)
             images_trigger = images_trigger.to(device)
             label = label.to(device)
@@ -343,8 +342,7 @@ def validate(val_loader, texts, model, prompter, criterion, args):
             if i % args.print_freq == 0:
                 progress.display(i)
 
-        print(' * Prompt Acc {prompt_accs.avg:.3f} Prompt Asr {prompt_asrs.avg:.3f} Original Acc {org_accs.avg:.3f}'.format(
-            prompt_accs=prompt_accs, prompt_asrs=prompt_asrs, org_accs=org_accs))
+        print(f' * Original Acc {org_accs.avg:.3f} Prompt Acc {prompt_accs.avg:.3f} Prompt Asr {prompt_asrs.avg:.3f}\n')
 
         if args.use_wandb:
             wandb.log({
@@ -357,60 +355,6 @@ def validate(val_loader, texts, model, prompter, criterion, args):
             })
 
     return None
-
-def validate_asr(val_loader, texts, model, prompter, criterion, args):
-    batch_time = AverageMeter('Time', ':6.3f')
-    losses = AverageMeter('Loss', ':.4e')
-    top1_org = AverageMeter('Original Asr', ':6.2f')
-    top1_prompt = AverageMeter('Prompt Asr', ':6.2f')
-    progress = ProgressMeter(
-        len(val_loader),
-        [batch_time, losses, top1_org, top1_prompt],
-        prefix='Validate: ')
-
-    # switch to evaluation mode
-    prompter.eval()
-
-    with torch.no_grad():
-        end = time.time()
-        for i, (images, target) in enumerate(tqdm(val_loader)):
-
-            images = images.to(device)
-            target = target.to(device)
-            text_tokens = clip.tokenize(texts).to(device)
-            prompted_images = prompter(images)
-
-            # compute output
-            output_prompt, _ = model(prompted_images, text_tokens)
-            output_org, _ = model(images, text_tokens)
-            loss = criterion(output_prompt, target)
-
-            # measure accuracy and record loss
-            asr1 = accuracy(output_prompt, target, topk=(1,))
-            losses.update(loss.item(), images.size(0))
-            top1_prompt.update(asr1[0].item(), images.size(0))
-
-            asr1 = accuracy(output_org, target, topk=(1,))
-            top1_org.update(asr1[0].item(), images.size(0))
-
-            # measure elapsed time
-            batch_time.update(time.time() - end)
-            end = time.time()
-
-            if i % args.print_freq == 0:
-                progress.display(i)
-
-        print(' * Prompt Asr@1 {top1_prompt.avg:.3f} Original Asr@1 {top1_org.avg:.3f}'
-              .format(top1_prompt=top1_prompt, top1_org=top1_org))
-
-        if args.use_wandb:
-            wandb.log({
-                'val_loss': losses.avg,
-                'val_asr_prompt': top1_prompt.avg,
-                'val_asr_org': top1_org.avg,
-            })
-
-    return top1_prompt.avg
 
 
 if __name__ == '__main__':
